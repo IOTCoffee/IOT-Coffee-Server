@@ -9,6 +9,8 @@ import io.ktor.routing.routing
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import kotlinx.coroutines.experimental.async
+import org.mindrot.jbcrypt.BCrypt
+import org.mindrot.jbcrypt.BCrypt.*
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
@@ -47,13 +49,16 @@ fun main(args: Array<String>) {
                 val params = call.receiveParameters()
                 val email: String = params["email"] as String
                 val password: String = params["password"] as String
+
+                val hashWord: String = hashpw(password, gensalt())
+
                 val rs = stmt.executeQuery("SELECT COUNT(*) FROM users WHERE email='$email';")
                 rs.next()
                 if (rs.getInt(1) > 0) {
                     call.respond(HttpStatusCode.Unauthorized, msgAdapter.toJson(ResponseMsg("User already exists")))
                     return@post
                 } else {
-                    stmt.executeUpdate("INSERT INTO users (email, password) VALUES ('$email', '$password');")
+                    stmt.executeUpdate("INSERT INTO users (email, password) VALUES ('$email', '$hashWord');")
                     call.respond(msgAdapter.toJson(ResponseMsg("Successfully registered!")))
                     return@post
                 }
@@ -63,9 +68,16 @@ fun main(args: Array<String>) {
                 val email: String = params["email"] as String
                 val password: String = params["password"] as String
 
-                val rs = stmt.executeQuery("SELECT COUNT(*) FROM users WHERE email='$email' AND password='$password';")
+                val count = stmt.executeQuery("SELECT COUNT(*) FROM users WHERE email='$email';")
+                count.next()
+                if (count.getInt(1) <= 0) {
+                    call.respond(HttpStatusCode.Unauthorized, msgAdapter.toJson(ResponseMsg("User not registered!")))
+                    return@post
+                }
+
+                val rs = stmt.executeQuery("SELECT password FROM users WHERE email='$email';")
                 rs.next()
-                if (rs.getInt(1) > 0) {
+                if (checkpw(password, rs.getString("password"))) {
                     val uuid = UUID.randomUUID()
                     stmt.executeUpdate("INSERT INTO logins (email, token) VALUES ('$email', '$uuid')")
                     call.respond(msgAdapter.toJson(ResponseMsg(uuid.toString())))
@@ -76,18 +88,39 @@ fun main(args: Array<String>) {
 
             post("/setBrew") {
                 val params = call.receiveParameters()
+                val url: String = params["url"] as String
+                val email: String = params["email"] as String
+                val name: String = params["name"] as String
+                val token: String = params["token"] as String
+
+                val rs = stmt.executeQuery("SELECT COUNT(*) FROM logins WHERE email='$email' AND token='$token'")
+                rs.next()
+                if (rs.getInt(1) > 0) {
+                    val exists = stmt.executeQuery("SELECT COUNT(*) FROM cmaker WHERE email='$email'")
+                    exists.next()
+                    if (exists.getInt(1) > 0) {
+                        stmt.executeUpdate("UPDATE cmaker SET url='$url', name='$name' WHERE email='$email'")
+                    } else {
+                        stmt.executeUpdate("INSERT INTO cmaker (email, url, name) VALUES ('$email', '$url', '$name');")
+                    }
+                    call.respond(msgAdapter.toJson(ResponseMsg("Set URL and coffee maker name!")))
+                } else {
+                    call.respond(HttpStatusCode.Unauthorized, msgAdapter.toJson(ResponseMsg("Invalid token! Log out and log in for a new token!")))
+                }
             }
 
             post("/brew") {
                 val params = call.receiveParameters()
                 val email: String = params["email"] as String
                 val rs = stmt.executeQuery("SELECT url FROM cmaker WHERE email='$email';")
-                rs.next()
-                val url = rs.getString("url")
-                if (url.isEmpty()) {
+
+                if (!rs.isBeforeFirst) {
                     call.respond(HttpStatusCode.NotAcceptable, msgAdapter.toJson(ResponseMsg("Need to set a URL to brew at!")))
                     return@post
                 }
+
+                rs.next()
+                val url = rs.getString("url")
 
                 retrofit = Retrofit.Builder()
                         .baseUrl(url)
