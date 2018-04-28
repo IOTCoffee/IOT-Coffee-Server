@@ -9,6 +9,7 @@ import io.ktor.routing.routing
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import kotlinx.coroutines.experimental.async
+import kotlinx.coroutines.experimental.launch
 import org.mindrot.jbcrypt.BCrypt
 import org.mindrot.jbcrypt.BCrypt.*
 import retrofit2.Call
@@ -16,6 +17,7 @@ import retrofit2.Callback
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import java.io.IOException
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
@@ -24,7 +26,7 @@ import kotlin.properties.Delegates
 
 fun main(args: Array<String>) {
 
-    embeddedServer(Netty, 3000) {
+    embeddedServer(Netty, 80) {
         var conn: Connection by Delegates.notNull()
         try {
             conn = DriverManager.getConnection("jdbc:mysql://localhost/iotcoffee?user=root&password=root&useSSL=false&serverTimezone=America/New_York")
@@ -86,7 +88,7 @@ fun main(args: Array<String>) {
                 }
             }
 
-            post("/setBrew") {
+            post("/setbrew") {
                 val params = call.receiveParameters()
                 val url: String = params["url"] as String
                 val email: String = params["email"] as String
@@ -115,7 +117,7 @@ fun main(args: Array<String>) {
                 val rs = stmt.executeQuery("SELECT url FROM cmaker WHERE email='$email';")
 
                 if (!rs.isBeforeFirst) {
-                    call.respond(HttpStatusCode.NotAcceptable, msgAdapter.toJson(ResponseMsg("Need to set a URL to brew at!")))
+                    call.respond(HttpStatusCode.NotFound, msgAdapter.toJson(ResponseMsg("Need to set a URL to brew at!")))
                     return@post
                 }
 
@@ -133,7 +135,6 @@ fun main(args: Array<String>) {
                         async {
                             call.respond(HttpStatusCode.NotAcceptable, msgAdapter.toJson(ResponseMsg("Unable to reach coffee maker")))
                         }
-                        return
                     }
 
                     override fun onResponse(ret: Call<Msg>, response: Response<Msg>) {
@@ -147,9 +148,53 @@ fun main(args: Array<String>) {
                     }
 
                 })
+            }
+            post("/pingcoffee") {
+                val params = call.receiveParameters()
+                val email: String = params["email"] as String
+                val token: String = params["token"] as String
 
+                println("PING START")
+
+                val rs = stmt.executeQuery("SELECT url FROM cmaker WHERE email='$email';")
+
+                if (!rs.isBeforeFirst) {
+                    call.respond(HttpStatusCode.NotFound, msgAdapter.toJson(ResponseMsg("Need to set a URL to brew at!")))
+                    println("PING URL DOESN'T EXIST")
+                    return@post
+                }
+
+                rs.next()
+
+                val url = rs.getString("url")
+
+                retrofit = Retrofit.Builder()
+                        .baseUrl(url)
+                        .addConverterFactory(MoshiConverterFactory.create())
+                        .build()
+
+                val brewPing = retrofit.create(BrewModel::class.java)
+                println("MADE IT THIS FAR")
+                var failure = true
+                val job = launch {
+                    println("INSIDE THE ASYNC")
+                    try {
+                        println("STARTING TO TRY BROTHERS")
+                        brewPing.brewPing().execute() 
+                        failure = false
+                    } catch (e: IOException) {
+                        println("FAILING")
+                    } 
+                }
+                job.join()
+                if (failure) {
+                    call.respond(HttpStatusCode.NotAcceptable, msgAdapter.toJson(ResponseMsg("Coffee maker server error!")))
+                } else {
+                    call.respond(HttpStatusCode.Accepted, msgAdapter.toJson(ResponseMsg("Coffee maker is online!")))
+                }
             }
         }
+
         println("Internet coffee server started")
     }.start(wait = true)
 }
